@@ -1,0 +1,56 @@
+# -----------------------------
+# AppKontally-ServiceAD-API (.gitignore)
+# Delphi / RAD Studio (Windows)
+# -----------------------------
+
+# 🔧 Artefactos generados por el compilador
+*.dcu
+*.dcp
+*.dcpil
+*.o
+*.obj
+*.hpp
+*.map
+*.rsm
+*.drc
+*.dres
+*.tds
+
+# 🧠 Caches/archivos locales del IDE
+*.identcache
+*.local
+*.dproj.local
+*.groupproj.local
+*.stat
+*.tvsconfig
+.dccache/
+__history/
+__recovery/
+*.cache
+*.tmp
+*.bak
+
+# 📦 Salidas de build (no versionar binarios)
+[Bb]uild/
+[Bb]in/
+[Ww]in32/
+[Ww]in64/
+Debug/
+Release/
+*/Win32/
+*/Win64/
+*/Debug/
+*/Release/
+
+# 📝 Logs
+*.log
+
+# 🖥️ Configs de editores/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ⚠️ Importante: se mantienen en control de versiones (NO ignorar)
+# .pas .dfm .dpr .dproj .res .rc .ini .skincfg
