@@ -103,16 +103,19 @@ function BuildPipeSA(out SA: SECURITY_ATTRIBUTES;
   out SD: PSECURITY_DESCRIPTOR): Boolean;
 const
   SDDL_REVISION_1 = 1;
-  // SID de KONTALLY\svc_WebBrokerAD (confirmado por ti)
-  SVC_SID = 'S-1-5-21-215823904-480249424-3313816966-1123';
 var
   SDDL: string;
+  AppPoolSid: string;
 begin
   SD := nil;
 
-  // DACL: SYSTEM y Administrators = GA (Full); svc_WebBrokerAD = GR|GW
-  SDDL := 'D:' + '(A;;GA;;;SY)' + '(A;;GA;;;BA)' + Format('(A;;GA;;;%SVC_SID%)',
-    [SVC_SID]);
+  // Resolver el SID del principal "IIS APPPOOL\AppKontallyPool"
+  AppPoolSid := GetSidStringForAccount('IIS AppPool\AppKontallyPool');
+  if AppPoolSid = '' then
+    Exit(False);
+
+  // DACL: SYSTEM y Administrators = GA; AppPool = GR|GW
+  SDDL := Format('D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;%s)', [AppPoolSid]);
 
   Result := ConvertStringSecurityDescriptorToSecurityDescriptorW
     (PWideChar(SDDL), SDDL_REVISION_1, SD, nil);

@@ -6,6 +6,7 @@ object AppKontallyServiceManager: TAppKontallyServiceManager
   OnPause = ServicePause
   OnStart = ServiceStart
   OnStop = ServiceStop
-  Height = 229
-  Width = 334
+  Height = 515
+  Width = 752
+  PixelsPerInch = 216
 end
