@@ -6,7 +6,8 @@ uses
   Winapi.Windows, System.SysUtils, System.Classes;
 
 type
-  TOnPipeRequest = procedure(const Payload: string) of object;
+  // FIX: callback ahora devuelve string (JSON)
+  TOnPipeRequest = function(const Payload: string): string of object;
 
   TPipeServerThread = class(TThread)
   private
@@ -34,10 +35,6 @@ function ConvertStringSecurityDescriptorToSecurityDescriptorW
 type
   TConvertSidToStringSidW = function(Sid: Pointer; var StringSid: LPWSTR)
     : BOOL; stdcall;
-
-const
-  // Identidad que debe poder conectarse al pipe (AppPool con SpecificUser)
-  PIPE_ALLOWED_ACCOUNT = 'KONTALLY\svc_WebBrokerAD';
 
 function ConvertSidToStringSid_Str(Sid: Pointer): string;
 var
@@ -79,9 +76,7 @@ begin
   DomainSize := 0;
   peUse := SidTypeInvalid;
 
-  // Primera llamada para tamaños
-  LookupAccountNameW(nil, PWideChar(Account), nil, SidSize, nil,
-    DomainSize, peUse);
+  LookupAccountNameW(nil, PWideChar(Account), nil, SidSize, nil, DomainSize, peUse);
   if GetLastError <> ERROR_INSUFFICIENT_BUFFER then
     Exit;
 
@@ -109,12 +104,12 @@ var
 begin
   SD := nil;
 
-  // Resolver el SID del principal "IIS APPPOOL\AppKontallyPool"
+  // Permitir al AppPool específico conectarse al pipe
   AppPoolSid := GetSidStringForAccount('IIS AppPool\AppKontallyPool');
   if AppPoolSid = '' then
     Exit(False);
 
-  // DACL: SYSTEM y Administrators = GA; AppPool = GR|GW
+  // DACL: SYSTEM/Administrators = GA; AppPool = GR|GW
   SDDL := Format('D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;%s)', [AppPoolSid]);
 
   Result := ConvertStringSecurityDescriptorToSecurityDescriptorW
@@ -134,9 +129,9 @@ constructor TPipeServerThread.Create(const APipeName: string;
 begin
   inherited Create(True); // suspendido
   FreeOnTerminate := False;
-  FPipeName := APipeName; // '\\.\pipe\AppKontallyAD'
-  FOnRequest := AOnRequest; // callback al servicio
-  FStopEvent := AStopEvent; // evento de parada del servicio
+  FPipeName := APipeName; // ej: '\\.\pipe\AppKontallyAD'
+  FOnRequest := AOnRequest;
+  FStopEvent := AStopEvent;
 end;
 
 function TPipeServerThread.CreatePipeInstance: THandle;
@@ -148,22 +143,21 @@ var
   HasSA: Boolean;
   pSA: PSecurityAttributes;
 begin
-  // DACL explícita: SYSTEM, Administrators y cuenta permitida
   SD := nil;
   HasSA := BuildPipeSA(SA, SD);
   if HasSA then
     pSA := @SA
   else
-    pSA := nil; // fallback a DACL por defecto del proceso
+    pSA := nil; // fallback a DACL por defecto
 
   Result := CreateNamedPipe(PChar(FPipeName), PIPE_ACCESS_DUPLEX,
-    PIPE_TYPE_MESSAGE or PIPE_READMODE_MESSAGE or PIPE_WAIT, 1, // una instancia
+    PIPE_TYPE_MESSAGE or PIPE_READMODE_MESSAGE or PIPE_WAIT,
+    1, // una instancia
     BUFSIZE, // out buffer
     BUFSIZE, // in buffer
-    0, // default timeout
+    0,       // default timeout
     pSA);
 
-  // Liberar SD asignado por advapi32
   if SD <> nil then
     LocalFree(HLOCAL(SD));
 end;
@@ -171,9 +165,9 @@ end;
 procedure TPipeServerThread.HandleClient(hPipe: THandle);
 var
   InBuf: TBytes;
-  BytesRead: DWORD;
+  BytesRead, BytesWritten: DWORD;
   S: AnsiString;
-  Line: string;
+  Line, Reply: string;
 begin
   SetLength(InBuf, 64 * 1024);
   while not Terminated do
@@ -190,11 +184,17 @@ begin
     if SameText(Line, '#shutdown') then
       Exit;
 
+    // FIX PRINCIPAL: usar la respuesta del servicio
+    Reply := '';
     if Assigned(FOnRequest) then
-      FOnRequest(Line);
+      Reply := FOnRequest(Line);
 
-    S := AnsiString('OK: ' + Line + sLineBreak);
-    WriteFile(hPipe, PAnsiChar(S)^, Length(S), BytesRead, nil);
+    // Solo usar fallback si no hay respuesta del callback
+    if Reply = '' then
+      Reply := 'OK: ' + Line;
+
+    S := AnsiString(Reply + sLineBreak);
+    WriteFile(hPipe, PAnsiChar(S)^, Length(S), BytesWritten, nil);
   end;
 end;
 
@@ -204,8 +204,7 @@ var
 begin
   while not Terminated do
   begin
-    if (FStopEvent <> 0) and (WaitForSingleObject(FStopEvent, 0) = WAIT_OBJECT_0)
-    then
+    if (FStopEvent <> 0) and (WaitForSingleObject(FStopEvent, 0) = WAIT_OBJECT_0) then
       Break;
 
     hPipe := CreatePipeInstance;
@@ -215,8 +214,7 @@ begin
       Continue;
     end;
 
-    if ConnectNamedPipe(hPipe, nil) or (GetLastError = ERROR_PIPE_CONNECTED)
-    then
+    if ConnectNamedPipe(hPipe, nil) or (GetLastError = ERROR_PIPE_CONNECTED) then
     begin
       try
         HandleClient(hPipe);
