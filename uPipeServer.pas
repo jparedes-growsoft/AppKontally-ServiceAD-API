@@ -6,7 +6,7 @@ uses
   Winapi.Windows, System.SysUtils, System.Classes;
 
 type
-  // FIX: callback ahora devuelve string (JSON)
+  // Callback que procesa la petición y devuelve JSON
   TOnPipeRequest = function(const Payload: string): string of object;
 
   TPipeServerThread = class(TThread)
@@ -19,22 +19,27 @@ type
   protected
     procedure Execute; override;
   public
-    constructor Create(const APipeName: string; AOnRequest: TOnPipeRequest;
-      AStopEvent: THandle);
+    constructor Create(const APipeName: string; AOnRequest: TOnPipeRequest; AStopEvent: THandle);
   end;
 
 implementation
 
+{ =================== Helpers de seguridad (SDDL) =================== }
+
+type
+  PSECURITY_DESCRIPTOR = Pointer;
+
 {$WARN SYMBOL_PLATFORM OFF}
-function ConvertStringSecurityDescriptorToSecurityDescriptorW
-  (StringSecurityDescriptor: PWideChar; StringSDRevision: DWORD;
-  var SecurityDescriptor: PSECURITY_DESCRIPTOR; SecurityDescriptorSize: PULONG)
-  : BOOL; stdcall; external 'advapi32.dll';
+function ConvertStringSecurityDescriptorToSecurityDescriptorW(
+  StringSecurityDescriptor: PWideChar;
+  StringSDRevision: DWORD;
+  var SecurityDescriptor: PSECURITY_DESCRIPTOR;
+  SecurityDescriptorSize: PCardinal
+): BOOL; stdcall; external 'advapi32.dll';
 {$WARN SYMBOL_PLATFORM ON}
 
 type
-  TConvertSidToStringSidW = function(Sid: Pointer; var StringSid: LPWSTR)
-    : BOOL; stdcall;
+  TConvertSidToStringSidW = function(Sid: Pointer; var StringSid: LPWSTR): BOOL; stdcall;
 
 function ConvertSidToStringSid_Str(Sid: Pointer): string;
 var
@@ -83,8 +88,7 @@ begin
   GetMem(pSid, SidSize);
   try
     SetLength(Domain, DomainSize);
-    ok := LookupAccountNameW(nil, PWideChar(Account), pSid, SidSize,
-      PWideChar(Domain), DomainSize, peUse);
+    ok := LookupAccountNameW(nil, PWideChar(Account), pSid, SidSize, PWideChar(Domain), DomainSize, peUse);
     if not ok then
       Exit;
 
@@ -94,42 +98,52 @@ begin
   end;
 end;
 
-function BuildPipeSA(out SA: SECURITY_ATTRIBUTES;
-  out SD: PSECURITY_DESCRIPTOR): Boolean;
+// Construye SECURITY_ATTRIBUTES con DACL explícita para el pipe.
+// Concede:
+//  - SYSTEM (SY) y Administrators (BA): Full (GA)
+//  - Cuenta del App Pool por USUARIO ESPECÍFICO (tu SID real) : Read/Write (GR,GW)
+//  - (Opcional) SID de "IIS AppPool\AppKontallyPool" si existe: Read/Write (GR,GW)
+function BuildPipeSA(out SA: SECURITY_ATTRIBUTES; out SD: PSECURITY_DESCRIPTOR): Boolean;
 const
-  SDDL_REVISION_1 = 1;
+  // **TU SID real (KONTALLY\svc_WebBrokerAD)**
+  APPPOOL_USER_SID = 'S-1-5-21-215823904-480249424-3313816966-1123';
 var
-  SDDL: string;
-  AppPoolSid: string;
+  SDDL: UnicodeString;
+  AppPoolIdentitySid: string;
 begin
   SD := nil;
 
-  // Permitir al AppPool específico conectarse al pipe
-  AppPoolSid := GetSidStringForAccount('IIS AppPool\AppKontallyPool');
-  if AppPoolSid = '' then
-    Exit(False);
+  // Intentar también el SID de la identidad virtual del App Pool (si alguna vez vuelves a ApplicationPoolIdentity)
+  AppPoolIdentitySid := GetSidStringForAccount('IIS AppPool\AppKontallyPool'); // puede venir vacío
 
-  // DACL: SYSTEM/Administrators = GA; AppPool = GR|GW
-  SDDL := Format('D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;%s)', [AppPoolSid]);
+  // DACL base: SYSTEM/BA Full
+  SDDL := 'D:(A;;GA;;;SY)(A;;GA;;;BA)';
 
-  Result := ConvertStringSecurityDescriptorToSecurityDescriptorW
-    (PWideChar(SDDL), SDDL_REVISION_1, SD, nil);
+  // Acceso RW para el usuario específico del App Pool
+  if APPPOOL_USER_SID <> '' then
+    SDDL := SDDL + '(A;;GRGW;;;' + APPPOOL_USER_SID + ')';
+
+  // Acceso RW para el SID de la identidad de AppPool (solo si resolvió)
+  if AppPoolIdentitySid <> '' then
+    SDDL := SDDL + '(A;;GRGW;;;' + AppPoolIdentitySid + ')';
+
+  Result := ConvertStringSecurityDescriptorToSecurityDescriptorW(PWideChar(SDDL), 1 {SDDL_REVISION_1}, SD, nil);
   if Result then
   begin
+    ZeroMemory(@SA, SizeOf(SA));
     SA.nLength := SizeOf(SA);
     SA.bInheritHandle := False;
     SA.lpSecurityDescriptor := SD;
   end;
 end;
 
-{ TPipeServerThread }
+{ =================== Implementación del servidor de pipe =================== }
 
-constructor TPipeServerThread.Create(const APipeName: string;
-  AOnRequest: TOnPipeRequest; AStopEvent: THandle);
+constructor TPipeServerThread.Create(const APipeName: string; AOnRequest: TOnPipeRequest; AStopEvent: THandle);
 begin
-  inherited Create(True); // suspendido
+  inherited Create(True); // Suspendido
   FreeOnTerminate := False;
-  FPipeName := APipeName; // ej: '\\.\pipe\AppKontallyAD'
+  FPipeName := APipeName; // Ej: '\\.\pipe\AppKontallyAD'
   FOnRequest := AOnRequest;
   FStopEvent := AStopEvent;
 end;
@@ -148,16 +162,20 @@ begin
   if HasSA then
     pSA := @SA
   else
-    pSA := nil; // fallback a DACL por defecto
+    pSA := nil; // Fallback a DACL por defecto si fallara la construcción
 
-  Result := CreateNamedPipe(PChar(FPipeName), PIPE_ACCESS_DUPLEX,
+  Result := CreateNamedPipe(
+    PChar(FPipeName),
+    PIPE_ACCESS_DUPLEX,
     PIPE_TYPE_MESSAGE or PIPE_READMODE_MESSAGE or PIPE_WAIT,
-    1, // una instancia
+    1,       // una instancia (igual que antes)
     BUFSIZE, // out buffer
     BUFSIZE, // in buffer
     0,       // default timeout
-    pSA);
+    pSA
+  );
 
+  // La seguridad ya se aplicó al handle; liberar SD
   if SD <> nil then
     LocalFree(HLOCAL(SD));
 end;
@@ -166,8 +184,8 @@ procedure TPipeServerThread.HandleClient(hPipe: THandle);
 var
   InBuf: TBytes;
   BytesRead, BytesWritten: DWORD;
-  S: AnsiString;
   Line, Reply: string;
+  OutBytes: TBytes;
 begin
   SetLength(InBuf, 64 * 1024);
   while not Terminated do
@@ -177,24 +195,24 @@ begin
     if BytesRead = 0 then
       Exit;
 
-    SetString(S, PAnsiChar(@InBuf[0]), BytesRead);
-    Line := Trim(string(S));
+    // === UTF-8 puro: convierte el buffer recibido a Unicode correctamente ===
+    Line := TEncoding.UTF8.GetString(InBuf, 0, BytesRead).Trim;
 
-    // salida rápida si nos mandan "shutdown"
+    // Cierre controlado
     if SameText(Line, '#shutdown') then
       Exit;
 
-    // FIX PRINCIPAL: usar la respuesta del servicio
+    // Procesar y responder (JSON)
     Reply := '';
     if Assigned(FOnRequest) then
       Reply := FOnRequest(Line);
-
-    // Solo usar fallback si no hay respuesta del callback
     if Reply = '' then
       Reply := 'OK: ' + Line;
 
-    S := AnsiString(Reply + sLineBreak);
-    WriteFile(hPipe, PAnsiChar(S)^, Length(S), BytesWritten, nil);
+    // === UTF-8 puro: serializa la respuesta en UTF-8, sin pérdidas ni mapeos ANSI ===
+    OutBytes := TEncoding.UTF8.GetBytes(Reply + sLineBreak);
+    if not WriteFile(hPipe, OutBytes[0], Length(OutBytes), BytesWritten, nil) then
+      Exit;
   end;
 end;
 
@@ -233,3 +251,4 @@ begin
 end;
 
 end.
+

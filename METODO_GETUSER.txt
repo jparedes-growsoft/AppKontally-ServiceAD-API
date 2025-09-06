@@ -1,0 +1,9 @@
+
+Consultar por sam
+Invoke-PipeJson '{"cmd":"GetUser","sam":"jparedes"}'
+
+Consultar por upn
+Invoke-PipeJson '{"cmd":"GetUser","upn":"maria@kontally.com"}'
+
+Consultar por email
+Invoke-PipeJson '{"cmd":"GetUser","email":"maria@kontally.com"}'

@@ -5,8 +5,8 @@ interface
 uses
   Winapi.Windows,
   System.SysUtils,
-  ActiveX,   // IDispatch
-  ComObj,    // CreateOleObject, EOleException
+  ActiveX, // IDispatch
+  ComObj, // CreateOleObject, EOleException
   System.Variants; // OleVariant en las firmas
 
 type
@@ -15,39 +15,41 @@ type
 
 procedure ADSI_SetLogger(const AProc: TLogProc);
 
-procedure CreateUserReal_ADSI(
-  const FriendlyName, Sam, UPN, Password, Email, OU_DN, GroupSam: string;
-  out UserSid, ObjectGuid: string;
-  const FirstName: string = '';
-  const LastName: string = '';
-  const Initials: string = '';
-  const Phone: string = '';
-  const Description: string = '';
-  const Title: string = '';
-  const Department: string = '';
-  const Company: string = ''
-);
+// CREATE
+procedure CreateUserReal_ADSI(const FriendlyName, Sam, UPN, Password, Email,
+  OU_DN, GroupSam: string; out UserSid, ObjectGuid: string;
+  const FirstName: string = ''; const LastName: string = '';
+  const Initials: string = ''; const Phone: string = '';
+  const Description: string = ''; const Title: string = '';
+  const Department: string = ''; const Company: string = '');
 
-// NUEVO: UpdateUser para aplicar campos opcionales
-procedure UpdateUser_ADSI(
-  const Sam, UPN: string;
-  const Email, FriendlyName, FirstName, LastName, Initials, Phone,
-        Description, Title, Department, Company: string;
-  out DistinguishedName: string
-);
+// UPDATE: UpdateUser para aplicar campos opcionales
+procedure UpdateUser_ADSI(const Sam, UPN: string;
+  const Email, FriendlyName, FirstName, LastName, Initials, Phone, Description,
+  Title, Department, Company: string; out DistinguishedName: string);
+
+// GET
+procedure GetUserInfo_ADSI(const Sam, UPN: string;
+  out DistinguishedName, SamAccountName, UserPrincipalName, Mail, DisplayName,
+  GivenName, Surname, Initials, TelephoneNumber, Description, Title_,
+  Department, Company, ObjectSid, ObjectGuid: string; out Enabled: Boolean);
+
+// RESET PASSWORD
+procedure ResetPassword_ADSI(const Sam, UPN, NewPassword: string;
+  const ForceChangeAtNextLogon: Boolean; out DistinguishedName: string);
 
 procedure EnableAdAccount(const UserObj: OleVariant);
 
 implementation
 
 const
-  GROUP_CN_CONTAINER       = 'CN=Users';
-  DOMAIN_NETBIOS           = 'KONTALLY';
+  GROUP_CN_CONTAINER = 'CN=Users';
+  DOMAIN_NETBIOS = 'KONTALLY';
 
-  ADS_UF_ACCOUNTDISABLE    = $0002;
-  ADS_UF_PASSWD_NOTREQD    = $0020;
-  ADS_UF_NORMAL_ACCOUNT    = $0200;
-  ADS_UF_DONT_EXPIRE_PASSWD= $10000;
+  ADS_UF_ACCOUNTDISABLE = $0002;
+  ADS_UF_PASSWD_NOTREQD = $0020;
+  ADS_UF_NORMAL_ACCOUNT = $0200;
+  ADS_UF_DONT_EXPIRE_PASSWD = $10000;
 
   IID_IDispatch: TGUID = '{00020400-0000-0000-C000-000000000046}';
 
@@ -102,7 +104,8 @@ begin
     if not VarIsNull(Root) and not VarIsEmpty(Root) then
       Result := Root.Get('defaultNamingContext');
   except
-    on E: Exception do _Log('GetDefaultNamingContext failed: ' + E.Message);
+    on E: Exception do
+      _Log('GetDefaultNamingContext failed: ' + E.Message);
   end;
 end;
 
@@ -129,7 +132,8 @@ end;
 
 // === Helpers SID/GUID ===
 {$WARN SYMBOL_PLATFORM OFF}
-function ConvertSidToStringSidW(Sid: Pointer; var StringSid: PWideChar): BOOL; stdcall; external 'advapi32.dll';
+function ConvertSidToStringSidW(Sid: Pointer; var StringSid: PWideChar): BOOL;
+  stdcall; external 'advapi32.dll';
 {$WARN SYMBOL_PLATFORM ON}
 
 function VariantToBytes(const V: OleVariant): TBytes;
@@ -138,11 +142,13 @@ var
   PData: Pointer;
 begin
   SetLength(Result, 0);
-  if not VarIsArray(V) then Exit;
+  if not VarIsArray(V) then
+    Exit;
   L := VarArrayLowBound(V, 1);
   H := VarArrayHighBound(V, 1);
   SetLength(Result, H - L + 1);
-  if Length(Result) = 0 then Exit;
+  if Length(Result) = 0 then
+    Exit;
   PData := VarArrayLock(V);
   try
     Move(PByte(PData)^, Result[0], Length(Result));
@@ -157,17 +163,19 @@ var
   pStr: PWideChar;
 begin
   Result := '';
-  if Length(B) = 0 then Exit;
+  if Length(B) = 0 then
+    Exit;
   GetMem(pSid, Length(B));
   try
     Move(B[0], pSid^, Length(B));
     pStr := nil;
     if ConvertSidToStringSidW(pSid, pStr) then
-    try
-      Result := pStr;
-    finally
-      if pStr <> nil then LocalFree(HLOCAL(pStr));
-    end;
+      try
+        Result := pStr;
+      finally
+        if pStr <> nil then
+          LocalFree(HLOCAL(pStr));
+      end;
   finally
     FreeMem(pSid);
   end;
@@ -178,7 +186,8 @@ var
   G: TGUID;
 begin
   Result := '';
-  if Length(B) <> SizeOf(TGUID) then Exit;
+  if Length(B) <> SizeOf(TGUID) then
+    Exit;
   Move(B[0], G, SizeOf(TGUID));
   Result := GUIDToString(G);
 end;
@@ -209,15 +218,18 @@ begin
   // 2) Fallback WinNT
   WinNTUser := Null;
   try
-    _Log(Format('SetPassword via WinNT -> WinNT://%s/%s,user', [DomainNetbios, Sam]));
-    WinNTUser := OleGetObject(Format('WinNT://%s/%s,user', [DomainNetbios, Sam]));
+    _Log(Format('SetPassword via WinNT -> WinNT://%s/%s,user',
+      [DomainNetbios, Sam]));
+    WinNTUser := OleGetObject(Format('WinNT://%s/%s,user',
+      [DomainNetbios, Sam]));
     if VarIsNull(WinNTUser) or VarIsEmpty(WinNTUser) then
       raise Exception.Create('Failed to get WinNT user object');
     WinNTUser.SetPassword(Password);
     _Log('SetPassword via WinNT -> ok');
   except
     on E: EOleException do
-      raise Exception.CreateFmt('SetPassword via WinNT FALLÓ (HRESULT=0x%.8x): %s',
+      raise Exception.CreateFmt
+        ('SetPassword via WinNT FALLÓ (HRESULT=0x%.8x): %s',
         [Cardinal(E.ErrorCode), E.Message]);
     on E: Exception do
       raise;
@@ -252,7 +264,8 @@ begin
   WinNTUser := Null;
   try
     _Log(Format('Set UAC via WinNT (UserFlags) -> 0x%.8x', [DesiredUac]));
-    WinNTUser := OleGetObject(Format('WinNT://%s/%s,user', [DomainNetbios, Sam]));
+    WinNTUser := OleGetObject(Format('WinNT://%s/%s,user',
+      [DomainNetbios, Sam]));
     if VarIsNull(WinNTUser) or VarIsEmpty(WinNTUser) then
       raise Exception.Create('Failed to get WinNT user object for UAC');
 
@@ -262,7 +275,8 @@ begin
       Flags := 0;
     end;
     Flags := Flags or ADS_UF_NORMAL_ACCOUNT or ADS_UF_DONT_EXPIRE_PASSWD;
-    Flags := Flags and (not ADS_UF_ACCOUNTDISABLE) and (not ADS_UF_PASSWD_NOTREQD);
+    Flags := Flags and (not ADS_UF_ACCOUNTDISABLE) and
+      (not ADS_UF_PASSWD_NOTREQD);
 
     WinNTUser.Put('UserFlags', Flags);
     try
@@ -287,7 +301,9 @@ var
   Query: string;
 begin
   Result := '';
-  Conn := Null; Cmd := Null; RS := Null;
+  Conn := Null;
+  Cmd := Null;
+  RS := Null;
 
   try
     try
@@ -298,7 +314,8 @@ begin
       Cmd := CreateOleObject('ADODB.Command');
       Cmd.ActiveConnection := Conn;
 
-      Query := Format('<LDAP://%s>;(sAMAccountName=%s);distinguishedName;subtree',
+      Query := Format
+        ('<LDAP://%s>;(sAMAccountName=%s);distinguishedName;subtree',
         [DomainDN, GroupSam]);
       Cmd.CommandText := Query;
 
@@ -313,8 +330,16 @@ begin
         _Log('FindGroupDNBySam failed: ' + E.Message);
     end;
   finally
-    if not VarIsNull(RS) and not VarIsEmpty(RS) then try RS.Close; except end;
-    if not VarIsNull(Conn) and not VarIsEmpty(Conn) then try Conn.Close; except end;
+    if not VarIsNull(RS) and not VarIsEmpty(RS) then
+      try
+        RS.Close;
+      except
+      end;
+    if not VarIsNull(Conn) and not VarIsEmpty(Conn) then
+      try
+        Conn.Close;
+      except
+      end;
   end;
 end;
 
@@ -324,13 +349,15 @@ var
   GroupPath, GroupDN: string;
   GroupObj: OleVariant;
 begin
-  if Trim(GroupSam) = '' then Exit;
+  if Trim(GroupSam) = '' then
+    Exit;
 
   if VarIsNull(UserObj) or VarIsEmpty(UserObj) then
     raise Exception.Create('AddUserToGroup: UserObj is null');
 
   // 1) Intento rápido: CN=Users
-  GroupPath := Format('LDAP://CN=%s,%s,%s', [GroupSam, GROUP_CN_CONTAINER, DomainDN]);
+  GroupPath := Format('LDAP://CN=%s,%s,%s', [GroupSam, GROUP_CN_CONTAINER,
+    DomainDN]);
   GroupObj := Null;
   try
     _Log('ADSI: Group.Add (CN=Users) -> ' + GroupPath);
@@ -346,13 +373,15 @@ begin
       _Log(Format('ADSI: Group.Add (CN=Users) FALLÓ (HRESULT=0x%.8x): %s',
         [Cardinal(E.ErrorCode), E.Message]));
     on E: Exception do
-      _Log('ADSI: Group.Add (CN=Users) FALLÓ: ' + E.ClassName + ': ' + E.Message);
+      _Log('ADSI: Group.Add (CN=Users) FALLÓ: ' + E.ClassName + ': ' +
+        E.Message);
   end;
 
   // 2) Fallback: buscar DN real
   GroupDN := FindGroupDNBySam(GroupSam, DomainDN);
   if GroupDN = '' then
-    raise Exception.CreateFmt('No se encontró el grupo "%s" en el dominio.', [GroupSam]);
+    raise Exception.CreateFmt('No se encontró el grupo "%s" en el dominio.',
+      [GroupSam]);
 
   GroupPath := 'LDAP://' + GroupDN;
   GroupObj := Null;
@@ -366,7 +395,8 @@ begin
     _Log('ADSI: Group.Add (DN real) ok');
   except
     on E: EOleException do
-      raise Exception.CreateFmt('ADSI: Group.Add (DN real) FALLÓ (HRESULT=0x%.8x): %s',
+      raise Exception.CreateFmt
+        ('ADSI: Group.Add (DN real) FALLÓ (HRESULT=0x%.8x): %s',
         [Cardinal(E.ErrorCode), E.Message]);
     on E: Exception do
       raise;
@@ -374,18 +404,12 @@ begin
 end;
 
 // === Crear usuario + devolver SID y objectGUID ===
-procedure CreateUserReal_ADSI(
-  const FriendlyName, Sam, UPN, Password, Email, OU_DN, GroupSam: string;
-  out UserSid, ObjectGuid: string;
-  const FirstName: string = '';
-  const LastName: string = '';
-  const Initials: string = '';
-  const Phone: string = '';
-  const Description: string = '';
-  const Title: string = '';
-  const Department: string = '';
-  const Company: string = ''
-);
+procedure CreateUserReal_ADSI(const FriendlyName, Sam, UPN, Password, Email,
+  OU_DN, GroupSam: string; out UserSid, ObjectGuid: string;
+  const FirstName: string = ''; const LastName: string = '';
+  const Initials: string = ''; const Phone: string = '';
+  const Description: string = ''; const Title: string = '';
+  const Department: string = ''; const Company: string = '');
 var
   OUObj, NewUser: OleVariant;
   CN, DomainDN: string;
@@ -393,12 +417,13 @@ var
   V: OleVariant;
   B: TBytes;
 begin
-  UserSid    := '';
+  UserSid := '';
   ObjectGuid := '';
 
   if (Trim(FriendlyName) = '') or (Trim(Sam) = '') or (Trim(UPN) = '') or
-     (Trim(Password) = '') or (Trim(Email) = '') or (Trim(OU_DN) = '') then
-    raise Exception.Create('Parámetros insuficientes (falta uno de: name, sam, upn, password, email, ou).');
+    (Trim(Password) = '') or (Trim(Email) = '') or (Trim(OU_DN) = '') then
+    raise Exception.Create
+      ('Parámetros insuficientes (falta uno de: name, sam, upn, password, email, ou).');
 
   CN := 'CN=' + FriendlyName;
   DomainDN := GetDomainDNFromOU(OU_DN);
@@ -425,9 +450,12 @@ begin
     NewUser.Put('displayName', FriendlyName);
     NewUser.Put('mail', Email);
 
-    if Trim(FirstName) <> '' then NewUser.Put('givenName', FirstName);
-    if Trim(LastName)  <> '' then NewUser.Put('sn',        LastName);
-    if Trim(Initials)  <> '' then NewUser.Put('initials',  Initials);
+    if Trim(FirstName) <> '' then
+      NewUser.Put('givenName', FirstName);
+    if Trim(LastName) <> '' then
+      NewUser.Put('sn', LastName);
+    if Trim(Initials) <> '' then
+      NewUser.Put('initials', Initials);
 
     // 3) Commit inicial
     _Log('ADSI: SetInfo -> post-minimos');
@@ -439,11 +467,16 @@ begin
     NewUser.SetInfo;
 
     // 5) Opcionales adicionales
-    if Trim(Phone)       <> '' then NewUser.Put('telephoneNumber', Phone);
-    if Trim(Description) <> '' then NewUser.Put('description',     Description);
-    if Trim(Title)       <> '' then NewUser.Put('title',           Title);
-    if Trim(Department)  <> '' then NewUser.Put('department',      Department);
-    if Trim(Company)     <> '' then NewUser.Put('company',         Company);
+    if Trim(Phone) <> '' then
+      NewUser.Put('telephoneNumber', Phone);
+    if Trim(Description) <> '' then
+      NewUser.Put('description', Description);
+    if Trim(Title) <> '' then
+      NewUser.Put('title', Title);
+    if Trim(Department) <> '' then
+      NewUser.Put('department', Department);
+    if Trim(Company) <> '' then
+      NewUser.Put('company', Company);
 
     // 6) Commit de opcionales
     _Log('ADSI: SetInfo -> post-opcionales');
@@ -497,7 +530,8 @@ begin
 
   except
     on E: EOleException do
-      raise Exception.CreateFmt('CreateUserReal_ADSI failed (HRESULT=0x%.8x): %s',
+      raise Exception.CreateFmt
+        ('CreateUserReal_ADSI failed (HRESULT=0x%.8x): %s',
         [Cardinal(E.ErrorCode), E.Message]);
     on E: Exception do
       raise Exception.CreateFmt('CreateUserReal_ADSI failed: %s', [E.Message]);
@@ -511,7 +545,9 @@ var
   Query: string;
 begin
   Result := '';
-  Conn := Null; Cmd := Null; RS := Null;
+  Conn := Null;
+  Cmd := Null;
+  RS := Null;
 
   try
     try
@@ -523,10 +559,12 @@ begin
       Cmd.ActiveConnection := Conn;
 
       if Trim(Sam) <> '' then
-        Query := Format('<LDAP://%s>;(sAMAccountName=%s);distinguishedName;subtree',
+        Query := Format
+          ('<LDAP://%s>;(sAMAccountName=%s);distinguishedName;subtree',
           [DomainDN, Sam])
       else
-        Query := Format('<LDAP://%s>;(userPrincipalName=%s);distinguishedName;subtree',
+        Query := Format
+          ('<LDAP://%s>;(userPrincipalName=%s);distinguishedName;subtree',
           [DomainDN, UPN]);
 
       Cmd.CommandText := Query;
@@ -542,18 +580,23 @@ begin
         _Log('FindUserDN failed: ' + E.Message);
     end;
   finally
-    if not VarIsNull(RS) and not VarIsEmpty(RS) then try RS.Close; except end;
-    if not VarIsNull(Conn) and not VarIsEmpty(Conn) then try Conn.Close; except end;
+    if not VarIsNull(RS) and not VarIsEmpty(RS) then
+      try
+        RS.Close;
+      except
+      end;
+    if not VarIsNull(Conn) and not VarIsEmpty(Conn) then
+      try
+        Conn.Close;
+      except
+      end;
   end;
 end;
 
 // === Update de atributos básicos (sin password) ===
-procedure UpdateUser_ADSI(
-  const Sam, UPN: string;
-  const Email, FriendlyName, FirstName, LastName, Initials, Phone,
-        Description, Title, Department, Company: string;
-  out DistinguishedName: string
-);
+procedure UpdateUser_ADSI(const Sam, UPN: string;
+  const Email, FriendlyName, FirstName, LastName, Initials, Phone, Description,
+  Title, Department, Company: string; out DistinguishedName: string);
 var
   DomainDN, UserDN: string;
   UserObj: OleVariant;
@@ -565,7 +608,8 @@ begin
 
   DomainDN := GetDefaultNamingContext;
   if DomainDN = '' then
-    raise Exception.Create('UpdateUser_ADSI: no se pudo obtener defaultNamingContext');
+    raise Exception.Create
+      ('UpdateUser_ADSI: no se pudo obtener defaultNamingContext');
 
   UserDN := FindUserDN(Sam, UPN, DomainDN);
   if UserDN = '' then
@@ -577,24 +621,247 @@ begin
     raise Exception.Create('UpdateUser_ADSI: fallo bind de usuario');
 
   // Setear sólo campos con valor
-  if Trim(Email)        <> '' then UserObj.Put('mail',         Email);
-  if Trim(FriendlyName) <> '' then begin
+  if Trim(Email) <> '' then
+    UserObj.Put('mail', Email);
+  if Trim(FriendlyName) <> '' then
+  begin
     UserObj.Put('displayName', FriendlyName);
     // si quieres reflejar en CN, se requiere mover el objeto (Renombrar CN) -> fuera de alcance aquí
   end;
-  if Trim(FirstName)    <> '' then UserObj.Put('givenName',    FirstName);
-  if Trim(LastName)     <> '' then UserObj.Put('sn',           LastName);
-  if Trim(Initials)     <> '' then UserObj.Put('initials',     Initials);
-  if Trim(Phone)        <> '' then UserObj.Put('telephoneNumber', Phone);
-  if Trim(Description)  <> '' then UserObj.Put('description',  Description);
-  if Trim(Title)        <> '' then UserObj.Put('title',        Title);
-  if Trim(Department)   <> '' then UserObj.Put('department',   Department);
-  if Trim(Company)      <> '' then UserObj.Put('company',      Company);
+  if Trim(FirstName) <> '' then
+    UserObj.Put('givenName', FirstName);
+  if Trim(LastName) <> '' then
+    UserObj.Put('sn', LastName);
+  if Trim(Initials) <> '' then
+    UserObj.Put('initials', Initials);
+  if Trim(Phone) <> '' then
+    UserObj.Put('telephoneNumber', Phone);
+  if Trim(Description) <> '' then
+    UserObj.Put('description', Description);
+  if Trim(Title) <> '' then
+    UserObj.Put('title', Title);
+  if Trim(Department) <> '' then
+    UserObj.Put('department', Department);
+  if Trim(Company) <> '' then
+    UserObj.Put('company', Company);
 
   _Log('ADSI: SetInfo -> update');
   UserObj.SetInfo;
 
   DistinguishedName := UserDN;
+end;
+
+procedure GetUserInfo_ADSI(const Sam, UPN: string;
+  out DistinguishedName, SamAccountName, UserPrincipalName, Mail, DisplayName,
+  GivenName, Surname, Initials, TelephoneNumber, Description, Title_,
+  Department, Company, ObjectSid, ObjectGuid: string; out Enabled: Boolean);
+var
+  DomainDN, UserDN: string;
+  UserObj: OleVariant;
+  V: OleVariant;
+  B: TBytes;
+  uac: Integer;
+
+  function ReadStrAttr(const Attr: string): string;
+  begin
+    Result := '';
+    try
+      V := UserObj.Get(Attr);
+      if not VarIsNull(V) and not VarIsEmpty(V) then
+        Result := VarToStr(V);
+    except
+      // ignorar atributos no presentes
+    end;
+  end;
+
+begin
+  // Inicializar outs
+  DistinguishedName := '';
+  SamAccountName := '';
+  UserPrincipalName := '';
+  Mail := '';
+  DisplayName := '';
+  GivenName := '';
+  Surname := '';
+  Initials := '';
+  TelephoneNumber := '';
+  Description := '';
+  Title_ := '';
+  Department := '';
+  Company := '';
+  ObjectSid := '';
+  ObjectGuid := '';
+  Enabled := False;
+
+  if (Trim(Sam) = '') and (Trim(UPN) = '') then
+    raise Exception.Create('GetUserInfo_ADSI: se requiere sam o upn');
+
+  DomainDN := GetDefaultNamingContext;
+  if DomainDN = '' then
+    raise Exception.Create
+      ('GetUserInfo_ADSI: no se pudo obtener defaultNamingContext');
+
+  // 1) Resolver DN por sam/upn
+  UserDN := FindUserDN(Sam, UPN, DomainDN);
+  if UserDN = '' then
+    raise Exception.Create('GetUserInfo_ADSI: usuario no encontrado');
+
+  _Log('ADSI: Bind user -> LDAP://' + UserDN);
+  UserObj := OleGetObject('LDAP://' + UserDN);
+
+  // 2) Leer atributos estándar (solo lectura)
+  DistinguishedName := UserDN;
+  SamAccountName := ReadStrAttr('sAMAccountName');
+  UserPrincipalName := ReadStrAttr('userPrincipalName');
+  Mail := ReadStrAttr('mail');
+  DisplayName := ReadStrAttr('displayName');
+  GivenName := ReadStrAttr('givenName');
+  Surname := ReadStrAttr('sn');
+  Initials := ReadStrAttr('initials');
+  TelephoneNumber := ReadStrAttr('telephoneNumber');
+  Description := ReadStrAttr('description');
+  Title_ := ReadStrAttr('title');
+  Department := ReadStrAttr('department');
+  Company := ReadStrAttr('company');
+
+  // 3) SID
+  try
+    V := UserObj.Get('objectSid');
+    B := VariantToBytes(V);
+    ObjectSid := SidBytesToString(B);
+  except
+    _Log('ADSI: objectSid lectura fallida');
+  end;
+
+  // 4) GUID
+  try
+    V := UserObj.Get('objectGUID');
+    B := VariantToBytes(V);
+    ObjectGuid := GuidBytesToString(B);
+  except
+    _Log('ADSI: objectGUID lectura fallida');
+  end;
+
+  // 5) Enabled (por UAC)
+  Enabled := True;
+  try
+    V := UserObj.Get('userAccountControl');
+    if not VarIsNull(V) and not VarIsEmpty(V) then
+    begin
+      uac := Integer(V);
+      Enabled := (uac and ADS_UF_ACCOUNTDISABLE) = 0;
+    end;
+  except
+    _Log('ADSI: userAccountControl lectura fallida');
+  end;
+end;
+
+procedure ResetPassword_ADSI(const Sam, UPN, NewPassword: string;
+  const ForceChangeAtNextLogon: Boolean; out DistinguishedName: string);
+var
+  DomainDN, DN, SamEff: string;
+  LdapUser: OleVariant;
+begin
+  DistinguishedName := '';
+
+  if (Trim(Sam) = '') and (Trim(UPN) = '') then
+    raise Exception.Create('ResetPassword_ADSI: se requiere sam o upn');
+
+  if Trim(NewPassword) = '' then
+    raise Exception.Create('ResetPassword_ADSI: password vacío');
+
+  DomainDN := GetDefaultNamingContext;
+  if DomainDN = '' then
+    raise Exception.Create
+      ('ResetPassword_ADSI: no se pudo obtener defaultNamingContext');
+
+  DN := FindUserDN(Sam, UPN, DomainDN);
+  if DN = '' then
+    raise Exception.Create('ResetPassword_ADSI: usuario no encontrado');
+
+  DistinguishedName := DN;
+
+  if Trim(Sam) <> '' then
+    _Log('ADSI: ResetPassword for sam=' + Sam)
+  else
+    _Log('ADSI: ResetPassword for upn=' + UPN);
+
+  // Abrir objeto LDAP del usuario
+  LdapUser := OleGetObject('LDAP://' + DN);
+  if VarIsNull(LdapUser) or VarIsEmpty(LdapUser) then
+    raise Exception.Create
+      ('ResetPassword_ADSI: no se pudo abrir objeto LDAP del usuario');
+
+  // Asegurar sAMAccountName para el fallback WinNT si vino sólo UPN
+  if Trim(Sam) <> '' then
+    SamEff := Sam
+  else
+  begin
+    try
+      SamEff := LdapUser.Get('sAMAccountName');
+    except
+      SamEff := '';
+    end;
+  end;
+
+  // 1) Cambiar la contraseña (intenta LDAP y cae a WinNT con DOMAIN_NETBIOS)
+  SetUserPassword_WithFallback(DOMAIN_NETBIOS, SamEff, NewPassword, LdapUser);
+
+  // 2) *** Desbloquear la cuenta en la MISMA operación ***
+  // - Si el DC expone UnlockAccount, lo invocamos.
+  // - En todos, limpiar lockoutTime = 0 y confirmar con SetInfo.
+  try
+    _Log('ADSI: unlock -> intento');
+    try
+      LdapUser.UnlockAccount; // puede no existir en algunos DC
+      _Log('ADSI: UnlockAccount método OK');
+    except
+      _Log('ADSI: UnlockAccount método no disponible/permitido, continúo con lockoutTime=0');
+    end;
+
+    try
+      LdapUser.Put('lockoutTime', 0); // clear lockout
+      _Log('ADSI: lockoutTime=0 seteado');
+    except
+      on E: EOleException do
+        _Log(Format('ADSI: lockoutTime FALL (HRESULT=0x%.8x): %s',
+          [Cardinal(E.ErrorCode), E.Message]));
+      on E: Exception do
+        _Log('ADSI: lockoutTime FALL: ' + E.ClassName + ': ' + E.Message);
+    end;
+
+    try
+      LdapUser.SetInfo; // persistir el unlock
+      _Log('ADSI: unlock -> SetInfo OK');
+    except
+      on E: EOleException do
+        _Log(Format('ADSI: unlock SetInfo FALL (HRESULT=0x%.8x): %s',
+          [Cardinal(E.ErrorCode), E.Message]));
+      on E: Exception do
+        _Log('ADSI: unlock SetInfo FALL: ' + E.ClassName + ': ' + E.Message);
+    end;
+  except
+    on E: Exception do
+      _Log('ADSI: unlock WARN: ' + E.ClassName + ': ' + E.Message);
+  end;
+
+  // 3) Forzar cambio en el próximo logon si aplica
+  if ForceChangeAtNextLogon then
+  begin
+    try
+      _Log('ADSI: Set pwdLastSet=0');
+      LdapUser.Put('pwdLastSet', 0);
+      LdapUser.SetInfo;
+      _Log('ADSI: pwdLastSet aplicado');
+    except
+      on E: EOleException do
+        _Log(Format('ADSI: pwdLastSet via LDAP FALL (HRESULT=0x%.8x): %s',
+          [Cardinal(E.ErrorCode), E.Message]));
+      on E: Exception do
+        _Log('ADSI: pwdLastSet via LDAP FALL: ' + E.ClassName + ': ' +
+          E.Message);
+    end;
+  end;
 end;
 
 end.

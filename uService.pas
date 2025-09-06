@@ -3,7 +3,7 @@
 interface
 
 uses
-  Winapi.Windows, Winapi.Messages, System.SysUtils, System.Classes, System.StrUtils,
+  Winapi.Windows, Winapi.Messages, System.SysUtils, System.Classes,
   Vcl.Graphics, Vcl.Controls, Vcl.SvcMgr, Vcl.Dialogs, Winapi.WinSvc,
   Winapi.ShellAPI, System.NetEncoding, System.Win.Registry,
   System.IOUtils, System.JSON, ActiveX, ComObj,
@@ -27,6 +27,8 @@ type
   public
     function GetServiceController: TServiceController; override;
 
+    function HandleGetUser(const Body: string): string;
+
     // Devuelve JSON
     function ProcessRequest(const Request: string): string;
 
@@ -43,6 +45,28 @@ var
 implementation
 
 {$R *.dfm}
+// === Helpers locales ===
+
+// Devuelve el string ya entrecomillado y escapado para JSON
+function Q(const S: string): string;
+var
+  J: TJSONString;
+begin
+  J := TJSONString.Create(S);
+  try
+    Result := J.ToJSON;
+  finally
+    J.Free;
+  end;
+end;
+
+// Log no intrusivo (redirige a tu logger real si lo tienes en este unit)
+procedure LogSafe(const S: string);
+begin
+{$IFDEF DEBUG}
+  OutputDebugString(PChar(S));
+{$ENDIF}
+end;
 
 procedure ServiceController(CtrlCode: DWord); stdcall;
 begin
@@ -66,7 +90,8 @@ begin
         FS := TFileStream.Create(FLogPath, fmCreate or fmShareDenyNone);
       try
         FS.Seek(0, soEnd);
-        S := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now) + ' - ' + Mensaje + sLineBreak;
+        S := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now) + ' - ' + Mensaje +
+          sLineBreak;
         Bytes := TEncoding.UTF8.GetBytes(S);
         FS.WriteBuffer(Bytes, Length(Bytes));
       finally
@@ -85,15 +110,81 @@ begin
   Result := ServiceController;
 end;
 
+function TAppKontallyServiceManager.HandleGetUser(const Body: string): string;
+var
+  JIn, JData, JOut: TJSONObject;
+  LSam, LUPN: string;
+  DN, sAM, UPNout, Mail, DisplayName, GivenName, Surname, Initials: string;
+  Tel, Description, Title_, Dept, Company, SidStr, GuidStr: string;
+  Enabled: Boolean;
+begin
+  Result := '';
+  try
+    // Parsear JSON de entrada
+    JIn := TJSONObject(TJSONObject.ParseJSONValue(Body));
+    if (JIn = nil) then
+      Exit('{"ok":false,"error":"JSON inválido"}');
+
+    LSam := Trim(JIn.GetValue<string>('sam', ''));
+    LUPN := Trim(JIn.GetValue<string>('upn', ''));
+
+    if (LSam = '') and (LUPN = '') then
+      Exit('{"ok":false,"error":"Debe especificar \"sam\" o \"upn\""}');
+
+    // Llamar ADSI (solo lectura)
+    GetUserInfo_ADSI(LSam, LUPN, DN, sAM, UPNout, Mail, DisplayName, GivenName,
+      Surname, Initials, Tel, Description, Title_, Dept, Company, SidStr,
+      GuidStr, Enabled);
+
+    // Construir JSON de salida (sin password)
+    JData := TJSONObject.Create;
+    JData.AddPair('distinguishedName', DN);
+    JData.AddPair('samAccountName', sAM);
+    JData.AddPair('userPrincipalName', UPNout);
+    JData.AddPair('mail', Mail);
+    JData.AddPair('displayName', DisplayName);
+    JData.AddPair('givenName', GivenName);
+    JData.AddPair('surname', Surname);
+    JData.AddPair('initials', Initials);
+    JData.AddPair('telephoneNumber', Tel);
+    JData.AddPair('description', Description);
+    JData.AddPair('title', Title_);
+    JData.AddPair('department', Dept);
+    JData.AddPair('company', Company);
+    JData.AddPair('enabled', TJSONBool.Create(Enabled));
+    JData.AddPair('objectSid', SidStr);
+    JData.AddPair('objectGuid', GuidStr);
+
+    JOut := TJSONObject.Create;
+    JOut.AddPair('ok', TJSONBool.Create(True));
+    JOut.AddPair('data', JData); // JOut toma propiedad de JData
+
+    if Trim(LSam) <> '' then
+      LogSafe('GetUser OK for: sam=' + LSam)
+    else
+      LogSafe('GetUser OK for: upn=' + LUPN);
+
+    Result := JOut.ToJSON;
+  except
+    on E: Exception do
+    begin
+      LogSafe('GetUser ERROR: ' + E.Message);
+      Result := '{"ok":false,"error":' + Q(E.Message) + '}';
+    end;
+  end;
+end;
+
 function TAppKontallyServiceManager.JSONGetStr(const J: TJSONObject;
   const Name: string): string;
 var
   V: TJSONValue;
 begin
   Result := '';
-  if not Assigned(J) then Exit;
+  if not Assigned(J) then
+    Exit;
   V := J.GetValue(Name);
-  if not Assigned(V) then Exit;
+  if not Assigned(V) then
+    Exit;
 
   if V is TJSONString then
     Result := TJSONString(V).Value
@@ -102,7 +193,8 @@ begin
 end;
 
 // ===== ProcessRequest (JSON IN -> JSON OUT) =====
-function TAppKontallyServiceManager.ProcessRequest(const Request: string): string;
+function TAppKontallyServiceManager.ProcessRequest(const Request
+  : string): string;
 var
   JO: TJSONObject;
   Cmd: string;
@@ -116,7 +208,7 @@ var
       .Replace(#10, '\n').Replace(#13, '\n');
   end;
 
-  // Helper robusto case-insensitive
+// Helper robusto case-insensitive
   function JSONGetStrLocal(const J: TJSONObject; const Field: string): string;
   var
     V: TJSONValue;
@@ -124,7 +216,8 @@ var
     i: Integer;
   begin
     Result := '';
-    if not Assigned(J) then Exit;
+    if not Assigned(J) then
+      Exit;
 
     V := J.GetValue(Field);
     if not Assigned(V) then
@@ -138,7 +231,8 @@ var
         end;
       end;
 
-    if not Assigned(V) then Exit;
+    if not Assigned(V) then
+      Exit;
 
     if V is TJSONString then
       Result := TJSONString(V).Value
@@ -157,7 +251,7 @@ var
     const Keys: array of string): string;
   var
     JApplied: TJSONObject;
-    k, v: string;
+    k, V: string;
     i: Integer;
   begin
     JApplied := TJSONObject.Create;
@@ -165,9 +259,9 @@ var
       for i := Low(Keys) to High(Keys) do
       begin
         k := Keys[i];
-        v := JSONGetStrLocal(JOIn, k);
-        if v <> '' then
-          JApplied.AddPair(k, v);
+        V := JSONGetStrLocal(JOIn, k);
+        if V <> '' then
+          JApplied.AddPair(k, V);
       end;
       Result := JApplied.ToJSON;
     finally
@@ -177,15 +271,27 @@ var
 
 var
   // comunes
-  Name, Sam, Upn, Pwd, Ou, Group, Email: string;
-  FirstName, LastName, Initials, Phone, Description, Title, Department, Company: string;
+  Name, sAM, UPN, Pwd, Ou, Group, Email: string;
+  FirstName, LastName, Initials, Phone, Description, Title, Department,
+    Company: string;
   DryRun: Boolean;
   DryRunVal: TJSONValue;
-  sidStr, guidStr: string;
+  SidStr, GuidStr: string;
+  ForceChange: Boolean;
 
   // update
   DNUpdated: string;
   AppliedJSON: string;
+
+  // get-user (lectura)
+  DN, sAMout, UPNout, MailOut, DisplayNameOut, GivenNameOut, SurnameOut,
+    InitialsOut, TelOut, DescriptionOut, TitleOut, DepartmentOut,
+    CompanyOut: string;
+  EnabledOut: Boolean;
+  EnabledStr: string;
+
+  // reset-password
+  DNReset: string;
 begin
   // Limpieza y log de entrada (passwords redactadas por tu helper)
   CleanReq := Request.Replace(#0, '');
@@ -213,8 +319,8 @@ begin
     begin
       // ===== CREATE =====
       Name := JSONGetStrLocal(JO, 'name');
-      Sam := JSONGetStrLocal(JO, 'sam');
-      Upn := JSONGetStrLocal(JO, 'upn');
+      sAM := JSONGetStrLocal(JO, 'sam');
+      UPN := JSONGetStrLocal(JO, 'upn');
       Pwd := JSONGetStrLocal(JO, 'password');
       Email := JSONGetStrLocal(JO, 'email');
       Ou := JSONGetStrLocal(JO, 'ou');
@@ -229,7 +335,8 @@ begin
       Department := JSONGetStrLocal(JO, 'department');
       Company := JSONGetStrLocal(JO, 'company');
 
-      if (Name = '') or (Sam = '') or (Upn = '') or (Pwd = '') or (Email = '') then
+      if (Name = '') or (sAM = '') or (UPN = '') or (Pwd = '') or (Email = '')
+      then
       begin
         Result := '{"ok":false,"error":"BAD_REQUEST","detail":"Faltan requeridos (name, sam, upn, password, email)"}';
         EscribirLog('CreateUser: parámetros incompletos (requiere email)');
@@ -238,10 +345,12 @@ begin
 
       if DryRun then
       begin
-        EscribirLog(Format('CreateUser(dryRun): Name=%s Sam=%s UPN=%s Email=%s OU=%s Group=%s',
-          [Name, Sam, Upn, Email, Ou, Group]));
-        Result := Format('{"ok":true,"action":"CreateUser","user":"%s","dryRun":true}',
-          [EscapeJsonString(Sam)]);
+        EscribirLog
+          (Format('CreateUser(dryRun): Name=%s Sam=%s UPN=%s Email=%s OU=%s Group=%s',
+          [Name, sAM, UPN, Email, Ou, Group]));
+        Result := Format
+          ('{"ok":true,"action":"CreateUser","user":"%s","dryRun":true}',
+          [EscapeJsonString(sAM)]);
         Exit;
       end;
 
@@ -250,27 +359,30 @@ begin
       needUninit := (hr = S_OK) or (hr = S_FALSE);
       if Failed(hr) and (hr <> RPC_E_CHANGED_MODE) then
       begin
-        FailLogAndExit('COM_INIT', Format('CoInitializeEx HRESULT=0x%.8x', [Cardinal(hr)]));
+        FailLogAndExit('COM_INIT', Format('CoInitializeEx HRESULT=0x%.8x',
+          [Cardinal(hr)]));
         Exit;
       end;
 
       try
         try
-          CreateUserReal_ADSI(Name, Sam, Upn, Pwd, Email, Ou, Group, sidStr,
-            guidStr, FirstName, LastName, Initials, Phone, Description, Title,
+          CreateUserReal_ADSI(Name, sAM, UPN, Pwd, Email, Ou, Group, SidStr,
+            GuidStr, FirstName, LastName, Initials, Phone, Description, Title,
             Department, Company);
 
-          EscribirLog(Format('CreateUser(REAL): creado %s en %s; agregado a %s; sid=%s; guid=%s',
-            [Sam, Ou, Group, sidStr, guidStr]));
+          EscribirLog
+            (Format('CreateUser(REAL): creado %s en %s; agregado a %s; sid=%s; guid=%s',
+            [sAM, Ou, Group, SidStr, GuidStr]));
 
-          Result := Format(
-            '{"ok":true,"action":"CreateUser","user":"%s","sid":"%s","objectGuid":"%s","dryRun":false}',
-            [EscapeJsonString(Sam), EscapeJsonString(sidStr), EscapeJsonString(guidStr)]
-          );
+          Result := Format
+            ('{"ok":true,"action":"CreateUser","user":"%s","sid":"%s","objectGuid":"%s","dryRun":false}',
+            [EscapeJsonString(sAM), EscapeJsonString(SidStr),
+            EscapeJsonString(GuidStr)]);
         except
           on E: EOleException do
           begin
-            EscribirLog(Format('CreateUser ERROR (EOleException): %s (HRESULT=0x%.8x)',
+            EscribirLog
+              (Format('CreateUser ERROR (EOleException): %s (HRESULT=0x%.8x)',
               [E.Message, Cardinal(EOleException(E).ErrorCode)]));
             Result := Format('{"ok":false,"error":"AD_ERROR","detail":"%s"}',
               [EscapeJsonString(E.Message)]);
@@ -278,6 +390,174 @@ begin
           on E: Exception do
           begin
             EscribirLog('CreateUser ERROR: ' + E.ClassName + ': ' + E.Message);
+            Result := Format
+              ('{"ok":false,"error":"INTERNAL_ERROR","detail":"%s"}',
+              [EscapeJsonString(E.Message)]);
+          end;
+        end;
+      finally
+        if needUninit then
+          CoUninitialize;
+      end;
+      Exit;
+    end
+    else if SameText(Cmd, 'UpdateUser') then
+    begin
+      // ===== UPDATE =====
+      sAM := JSONGetStrLocal(JO, 'sam');
+      UPN := JSONGetStrLocal(JO, 'upn');
+
+      Email := JSONGetStrLocal(JO, 'email');
+      Name := JSONGetStrLocal(JO, 'name');
+      FirstName := JSONGetStrLocal(JO, 'firstName');
+      LastName := JSONGetStrLocal(JO, 'lastName');
+      Initials := JSONGetStrLocal(JO, 'initials');
+      Phone := JSONGetStrLocal(JO, 'phone');
+      Description := JSONGetStrLocal(JO, 'description');
+      Title := JSONGetStrLocal(JO, 'title');
+      Department := JSONGetStrLocal(JO, 'department');
+      Company := JSONGetStrLocal(JO, 'company');
+
+      if (sAM = '') and (UPN = '') then
+      begin
+        Result := '{"ok":false,"error":"BAD_REQUEST","detail":"Se requiere sam o upn"}';
+        EscribirLog('UpdateUser: faltan identificadores');
+        Exit;
+      end;
+
+      // JSON de campos que vienen (para eco/applied)
+      AppliedJSON := BuildAppliedJSON(JO, ['email', 'name', 'firstName',
+        'lastName', 'initials', 'phone', 'description', 'title', 'department',
+        'company']);
+
+      if DryRun then
+      begin
+        EscribirLog(Format('UpdateUser(dryRun): sam=%s upn=%s applied=%s',
+          [sAM, UPN, AppliedJSON]));
+        Result := Format
+          ('{"ok":true,"action":"UpdateUser","sam":"%s","upn":"%s","dryRun":true,"applied":%s}',
+          [EscapeJsonString(sAM), EscapeJsonString(UPN), AppliedJSON]);
+        Exit;
+      end;
+
+      // COM init
+      hr := CoInitializeEx(nil, COINIT_APARTMENTTHREADED);
+      needUninit := (hr = S_OK) or (hr = S_FALSE);
+      if Failed(hr) and (hr <> RPC_E_CHANGED_MODE) then
+      begin
+        FailLogAndExit('COM_INIT', Format('CoInitializeEx HRESULT=0x%.8x',
+          [Cardinal(hr)]));
+        Exit;
+      end;
+
+      try
+        try
+          UpdateUser_ADSI(sAM, UPN, Email, Name, FirstName, LastName, Initials,
+            Phone, Description, Title, Department, Company, DNUpdated);
+
+          EscribirLog(Format('UpdateUser(REAL): sam=%s upn=%s dn=%s applied=%s',
+            [sAM, UPN, DNUpdated, AppliedJSON]));
+
+          Result := Format
+            ('{"ok":true,"action":"UpdateUser","sam":"%s","upn":"%s","dn":"%s","dryRun":false,"applied":%s}',
+            [EscapeJsonString(sAM), EscapeJsonString(UPN),
+            EscapeJsonString(DNUpdated), AppliedJSON]);
+        except
+          on E: EOleException do
+          begin
+            EscribirLog
+              (Format('UpdateUser ERROR (EOleException): %s (HRESULT=0x%.8x)',
+              [E.Message, Cardinal(EOleException(E).ErrorCode)]));
+            Result := Format('{"ok":false,"error":"AD_ERROR","detail":"%s"}',
+              [EscapeJsonString(E.Message)]);
+          end;
+          on E: Exception do
+          begin
+            EscribirLog('UpdateUser ERROR: ' + E.ClassName + ': ' + E.Message);
+            Result := Format
+              ('{"ok":false,"error":"INTERNAL_ERROR","detail":"%s"}',
+              [EscapeJsonString(E.Message)]);
+          end;
+        end;
+      finally
+        if needUninit then
+          CoUninitialize;
+      end;
+      Exit;
+    end
+    else if SameText(Cmd, 'ResetPassword') then
+    begin
+      // ===== RESET PASSWORD =====
+      sAM := JSONGetStrLocal(JO, 'sam');
+      UPN := JSONGetStrLocal(JO, 'upn');
+      Pwd := JSONGetStrLocal(JO, 'password');
+      // por defecto TRUE si no viene
+      ForceChange := True;
+      if JO.GetValue('forceChangeAtNextLogon') <> nil then
+        ForceChange := SameText(JO.GetValue('forceChangeAtNextLogon').Value, 'true');
+
+      if (sAM = '') and (UPN = '') then
+      begin
+        Result := '{"ok":false,"error":"BAD_REQUEST","detail":"Se requiere sam o upn"}';
+        EscribirLog('ResetPassword: faltan identificadores');
+        Exit;
+      end;
+
+      if Pwd = '' then
+      begin
+        Result := '{"ok":false,"error":"BAD_REQUEST","detail":"Se requiere password"}';
+        EscribirLog('ResetPassword: password vacío');
+        Exit;
+      end;
+
+      if DryRun then
+      begin
+        if sAM <> '' then
+          EscribirLog('ResetPassword(dryRun): sam=' + sAM)
+        else
+          EscribirLog('ResetPassword(dryRun): upn=' + UPN);
+
+        Result := Format(
+          '{"ok":true,"action":"ResetPassword","sam":"%s","upn":"%s","dryRun":true}',
+          [EscapeJsonString(sAM), EscapeJsonString(UPN)]
+        );
+        Exit;
+      end;
+
+      // COM init
+      hr := CoInitializeEx(nil, COINIT_APARTMENTTHREADED);
+      needUninit := (hr = S_OK) or (hr = S_FALSE);
+      if Failed(hr) and (hr <> RPC_E_CHANGED_MODE) then
+      begin
+        FailLogAndExit('COM_INIT', Format('CoInitializeEx HRESULT=0x%.8x',
+          [Cardinal(hr)]));
+        Exit;
+      end;
+
+      try
+        try
+          ResetPassword_ADSI(sAM, UPN, Pwd, ForceChange, DNReset);
+
+          if sAM <> '' then
+            EscribirLog(Format('ResetPassword(REAL): sam=%s dn=%s', [sAM, DNReset]))
+          else
+            EscribirLog(Format('ResetPassword(REAL): upn=%s dn=%s', [UPN, DNReset]));
+
+          Result := Format(
+            '{"ok":true,"action":"ResetPassword","sam":"%s","upn":"%s","dn":"%s","dryRun":false}',
+            [EscapeJsonString(sAM), EscapeJsonString(UPN), EscapeJsonString(DNReset)]
+          );
+        except
+          on E: EOleException do
+          begin
+            EscribirLog(Format('ResetPassword ERROR (EOleException): %s (HRESULT=0x%.8x)',
+              [E.Message, Cardinal(EOleException(E).ErrorCode)]));
+            Result := Format('{"ok":false,"error":"AD_ERROR","detail":"%s"}',
+              [EscapeJsonString(E.Message)]);
+          end;
+          on E: Exception do
+          begin
+            EscribirLog('ResetPassword ERROR: ' + E.ClassName + ': ' + E.Message);
             Result := Format('{"ok":false,"error":"INTERNAL_ERROR","detail":"%s"}',
               [EscapeJsonString(E.Message)]);
           end;
@@ -288,77 +568,76 @@ begin
       end;
       Exit;
     end
-    else
-    if SameText(Cmd, 'UpdateUser') then
+    else if SameText(Cmd, 'GetUser') then
     begin
-      // ===== UPDATE =====
-      Sam := JSONGetStrLocal(JO, 'sam');
-      Upn := JSONGetStrLocal(JO, 'upn');
+      // ===== GET (READ-ONLY) =====
+      sAM := JSONGetStrLocal(JO, 'sam');
+      UPN := JSONGetStrLocal(JO, 'upn');
 
-      Email       := JSONGetStrLocal(JO, 'email');
-      Name        := JSONGetStrLocal(JO, 'name');
-      FirstName   := JSONGetStrLocal(JO, 'firstName');
-      LastName    := JSONGetStrLocal(JO, 'lastName');
-      Initials    := JSONGetStrLocal(JO, 'initials');
-      Phone       := JSONGetStrLocal(JO, 'phone');
-      Description := JSONGetStrLocal(JO, 'description');
-      Title       := JSONGetStrLocal(JO, 'title');
-      Department  := JSONGetStrLocal(JO, 'department');
-      Company     := JSONGetStrLocal(JO, 'company');
-
-      if (Sam = '') and (Upn = '') then
+      if (sAM = '') and (UPN = '') then
       begin
         Result := '{"ok":false,"error":"BAD_REQUEST","detail":"Se requiere sam o upn"}';
-        EscribirLog('UpdateUser: faltan identificadores');
+        EscribirLog('GetUser: faltan identificadores');
         Exit;
       end;
 
-      // JSON de campos que vienen (para eco/applied)
-      AppliedJSON := BuildAppliedJSON(JO,
-        ['email','name','firstName','lastName','initials','phone','description','title','department','company']);
-
-      if DryRun then
-      begin
-        EscribirLog(Format('UpdateUser(dryRun): sam=%s upn=%s applied=%s',
-          [Sam, Upn, AppliedJSON]));
-        Result := Format('{"ok":true,"action":"UpdateUser","sam":"%s","upn":"%s","dryRun":true,"applied":%s}',
-          [EscapeJsonString(Sam), EscapeJsonString(Upn), AppliedJSON]);
-        Exit;
-      end;
-
-      // COM init
+      // COM init (necesario para ADSI)
       hr := CoInitializeEx(nil, COINIT_APARTMENTTHREADED);
       needUninit := (hr = S_OK) or (hr = S_FALSE);
       if Failed(hr) and (hr <> RPC_E_CHANGED_MODE) then
       begin
-        FailLogAndExit('COM_INIT', Format('CoInitializeEx HRESULT=0x%.8x', [Cardinal(hr)]));
+        FailLogAndExit('COM_INIT', Format('CoInitializeEx HRESULT=0x%.8x',
+          [Cardinal(hr)]));
         Exit;
       end;
 
       try
         try
-          UpdateUser_ADSI(Sam, Upn, Email, Name, FirstName, LastName, Initials, Phone,
-            Description, Title, Department, Company, DNUpdated);
+          // LECTURA ADSI (sin contraseña)
+          GetUserInfo_ADSI(sAM, UPN, DN, sAMout, UPNout, MailOut,
+            DisplayNameOut, GivenNameOut, SurnameOut, InitialsOut, TelOut,
+            DescriptionOut, TitleOut, DepartmentOut, CompanyOut, SidStr,
+            GuidStr, EnabledOut);
 
-          EscribirLog(Format('UpdateUser(REAL): sam=%s upn=%s dn=%s applied=%s',
-            [Sam, Upn, DNUpdated, AppliedJSON]));
+          if EnabledOut then
+            EnabledStr := 'true'
+          else
+            EnabledStr := 'false';
 
-          Result := Format(
-            '{"ok":true,"action":"UpdateUser","sam":"%s","upn":"%s","dn":"%s","dryRun":false,"applied":%s}',
-            [EscapeJsonString(Sam), EscapeJsonString(Upn),
-             EscapeJsonString(DNUpdated), AppliedJSON]);
+          // Construir respuesta JSON (sin password)
+          Result := Format
+            ('{"ok":true,"action":"GetUser","sam":"%s","upn":"%s","data":{' +
+            '"distinguishedName":"%s",' + '"samAccountName":"%s",' +
+            '"userPrincipalName":"%s",' + '"mail":"%s",' + '"displayName":"%s",'
+            + '"givenName":"%s",' + '"surname":"%s",' + '"initials":"%s",' +
+            '"telephoneNumber":"%s",' + '"description":"%s",' + '"title":"%s",'
+            + '"department":"%s",' + '"company":"%s",' + '"enabled":%s,' +
+            '"objectSid":"%s",' + '"objectGuid":"%s"' + '}}',
+            [EscapeJsonString(sAM), EscapeJsonString(UPN), EscapeJsonString(DN),
+            EscapeJsonString(sAMout), EscapeJsonString(UPNout),
+            EscapeJsonString(MailOut), EscapeJsonString(DisplayNameOut),
+            EscapeJsonString(GivenNameOut), EscapeJsonString(SurnameOut),
+            EscapeJsonString(InitialsOut), EscapeJsonString(TelOut),
+            EscapeJsonString(DescriptionOut), EscapeJsonString(TitleOut),
+            EscapeJsonString(DepartmentOut), EscapeJsonString(CompanyOut),
+            EnabledStr, EscapeJsonString(SidStr), EscapeJsonString(GuidStr)]);
+
+          EscribirLog(Format('GetUser(READ): sam=%s upn=%s dn=%s',
+            [sAM, UPN, DN]));
         except
           on E: EOleException do
           begin
-            EscribirLog(Format('UpdateUser ERROR (EOleException): %s (HRESULT=0x%.8x)',
+            EscribirLog
+              (Format('GetUser ERROR (EOleException): %s (HRESULT=0x%.8x)',
               [E.Message, Cardinal(EOleException(E).ErrorCode)]));
             Result := Format('{"ok":false,"error":"AD_ERROR","detail":"%s"}',
               [EscapeJsonString(E.Message)]);
           end;
           on E: Exception do
           begin
-            EscribirLog('UpdateUser ERROR: ' + E.ClassName + ': ' + E.Message);
-            Result := Format('{"ok":false,"error":"INTERNAL_ERROR","detail":"%s"}',
+            EscribirLog('GetUser ERROR: ' + E.ClassName + ': ' + E.Message);
+            Result := Format
+              ('{"ok":false,"error":"INTERNAL_ERROR","detail":"%s"}',
               [EscapeJsonString(E.Message)]);
           end;
         end;
@@ -411,7 +690,7 @@ begin
     ServiceThread.ProcessRequests(False);
     if WaitForSingleObject(FStopEvent, 1000) = WAIT_OBJECT_0 then
       Break;
-    end;
+  end;
   EscribirLog('ServiceExecute: loop finalizado.');
 end;
 
@@ -492,7 +771,8 @@ begin
     if waitRes = WAIT_TIMEOUT then
     begin
       PipeTerminated := False;
-      EscribirLog('ServiceStop: WARNING - PipeThread no terminó en 5s (se continuará el apagado).');
+      EscribirLog
+        ('ServiceStop: WARNING - PipeThread no terminó en 5s (se continuará el apagado).');
     end
     else
     begin
@@ -522,3 +802,4 @@ begin
 end;
 
 end.
+
