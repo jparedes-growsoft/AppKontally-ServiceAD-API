@@ -19,27 +19,27 @@ type
   protected
     procedure Execute; override;
   public
-    constructor Create(const APipeName: string; AOnRequest: TOnPipeRequest; AStopEvent: THandle);
+    constructor Create(const APipeName: string; AOnRequest: TOnPipeRequest;
+      AStopEvent: THandle);
   end;
 
 implementation
 
-{ =================== Helpers de seguridad (SDDL) =================== }
+{=================== Helpers de seguridad (SDDL) ===================}
 
 type
   PSECURITY_DESCRIPTOR = Pointer;
 
 {$WARN SYMBOL_PLATFORM OFF}
-function ConvertStringSecurityDescriptorToSecurityDescriptorW(
-  StringSecurityDescriptor: PWideChar;
-  StringSDRevision: DWORD;
+function ConvertStringSecurityDescriptorToSecurityDescriptorW
+  (StringSecurityDescriptor: PWideChar; StringSDRevision: DWORD;
   var SecurityDescriptor: PSECURITY_DESCRIPTOR;
-  SecurityDescriptorSize: PCardinal
-): BOOL; stdcall; external 'advapi32.dll';
+  SecurityDescriptorSize: PCardinal): BOOL; stdcall; external 'advapi32.dll';
 {$WARN SYMBOL_PLATFORM ON}
 
 type
-  TConvertSidToStringSidW = function(Sid: Pointer; var StringSid: LPWSTR): BOOL; stdcall;
+  TConvertSidToStringSidW = function(Sid: Pointer; var StringSid: LPWSTR)
+    : BOOL; stdcall;
 
 function ConvertSidToStringSid_Str(Sid: Pointer): string;
 var
@@ -81,14 +81,16 @@ begin
   DomainSize := 0;
   peUse := SidTypeInvalid;
 
-  LookupAccountNameW(nil, PWideChar(Account), nil, SidSize, nil, DomainSize, peUse);
+  LookupAccountNameW(nil, PWideChar(Account), nil, SidSize, nil,
+    DomainSize, peUse);
   if GetLastError <> ERROR_INSUFFICIENT_BUFFER then
     Exit;
 
   GetMem(pSid, SidSize);
   try
     SetLength(Domain, DomainSize);
-    ok := LookupAccountNameW(nil, PWideChar(Account), pSid, SidSize, PWideChar(Domain), DomainSize, peUse);
+    ok := LookupAccountNameW(nil, PWideChar(Account), pSid, SidSize,
+      PWideChar(Domain), DomainSize, peUse);
     if not ok then
       Exit;
 
@@ -100,13 +102,15 @@ end;
 
 // Construye SECURITY_ATTRIBUTES con DACL explícita para el pipe.
 // Concede:
-//  - SYSTEM (SY) y Administrators (BA): Full (GA)
-//  - Cuenta del App Pool por USUARIO ESPECÍFICO (tu SID real) : Read/Write (GR,GW)
-//  - (Opcional) SID de "IIS AppPool\AppKontallyPool" si existe: Read/Write (GR,GW)
-function BuildPipeSA(out SA: SECURITY_ATTRIBUTES; out SD: PSECURITY_DESCRIPTOR): Boolean;
+// - SYSTEM (SY) y Administrators (BA): Full (GA)
+// - Cuenta del App Pool por USUARIO ESPECÍFICO (tu SID real) : Read/Write (GR,GW)
+// - (Opcional) SID de "IIS AppPool\AppKontallyPool" si existe: Read/Write (GR,GW)
+function BuildPipeSA(out SA: SECURITY_ATTRIBUTES;
+  out SD: PSECURITY_DESCRIPTOR): Boolean;
 const
   // **TU SID real (KONTALLY\svc_WebBrokerAD)**
-  APPPOOL_USER_SID = 'S-1-5-21-215823904-480249424-3313816966-1123';
+  // APPPOOL_USER_SID = 'S-1-5-21-215823904-480249424-3313816966-1123' Vesion 1.0;
+  APPPOOL_USER_SID = 'S-1-5-21-1008822446-3569085554-1705377759-1105';
 var
   SDDL: UnicodeString;
   AppPoolIdentitySid: string;
@@ -114,7 +118,8 @@ begin
   SD := nil;
 
   // Intentar también el SID de la identidad virtual del App Pool (si alguna vez vuelves a ApplicationPoolIdentity)
-  AppPoolIdentitySid := GetSidStringForAccount('IIS AppPool\AppKontallyPool'); // puede venir vacío
+  AppPoolIdentitySid := GetSidStringForAccount('IIS AppPool\AppKontallyPool');
+  // puede venir vacío
 
   // DACL base: SYSTEM/BA Full
   SDDL := 'D:(A;;GA;;;SY)(A;;GA;;;BA)';
@@ -127,7 +132,8 @@ begin
   if AppPoolIdentitySid <> '' then
     SDDL := SDDL + '(A;;GRGW;;;' + AppPoolIdentitySid + ')';
 
-  Result := ConvertStringSecurityDescriptorToSecurityDescriptorW(PWideChar(SDDL), 1 {SDDL_REVISION_1}, SD, nil);
+  Result := ConvertStringSecurityDescriptorToSecurityDescriptorW
+    (PWideChar(SDDL), 1{SDDL_REVISION_1}, SD, nil);
   if Result then
   begin
     ZeroMemory(@SA, SizeOf(SA));
@@ -137,9 +143,10 @@ begin
   end;
 end;
 
-{ =================== Implementación del servidor de pipe =================== }
+{=================== Implementación del servidor de pipe ===================}
 
-constructor TPipeServerThread.Create(const APipeName: string; AOnRequest: TOnPipeRequest; AStopEvent: THandle);
+constructor TPipeServerThread.Create(const APipeName: string;
+  AOnRequest: TOnPipeRequest; AStopEvent: THandle);
 begin
   inherited Create(True); // Suspendido
   FreeOnTerminate := False;
@@ -164,16 +171,13 @@ begin
   else
     pSA := nil; // Fallback a DACL por defecto si fallara la construcción
 
-  Result := CreateNamedPipe(
-    PChar(FPipeName),
-    PIPE_ACCESS_DUPLEX,
-    PIPE_TYPE_MESSAGE or PIPE_READMODE_MESSAGE or PIPE_WAIT,
-    1,       // una instancia (igual que antes)
+  Result := CreateNamedPipe(PChar(FPipeName), PIPE_ACCESS_DUPLEX,
+    PIPE_TYPE_MESSAGE or PIPE_READMODE_MESSAGE or PIPE_WAIT, 1,
+    // una instancia (igual que antes)
     BUFSIZE, // out buffer
     BUFSIZE, // in buffer
-    0,       // default timeout
-    pSA
-  );
+    0, // default timeout
+    pSA);
 
   // La seguridad ya se aplicó al handle; liberar SD
   if SD <> nil then
@@ -211,7 +215,8 @@ begin
 
     // === UTF-8 puro: serializa la respuesta en UTF-8, sin pérdidas ni mapeos ANSI ===
     OutBytes := TEncoding.UTF8.GetBytes(Reply + sLineBreak);
-    if not WriteFile(hPipe, OutBytes[0], Length(OutBytes), BytesWritten, nil) then
+    if not WriteFile(hPipe, OutBytes[0], Length(OutBytes), BytesWritten, nil)
+    then
       Exit;
   end;
 end;
@@ -222,7 +227,8 @@ var
 begin
   while not Terminated do
   begin
-    if (FStopEvent <> 0) and (WaitForSingleObject(FStopEvent, 0) = WAIT_OBJECT_0) then
+    if (FStopEvent <> 0) and (WaitForSingleObject(FStopEvent, 0) = WAIT_OBJECT_0)
+    then
       Break;
 
     hPipe := CreatePipeInstance;
@@ -232,7 +238,8 @@ begin
       Continue;
     end;
 
-    if ConnectNamedPipe(hPipe, nil) or (GetLastError = ERROR_PIPE_CONNECTED) then
+    if ConnectNamedPipe(hPipe, nil) or (GetLastError = ERROR_PIPE_CONNECTED)
+    then
     begin
       try
         HandleClient(hPipe);
@@ -251,4 +258,3 @@ begin
 end;
 
 end.
-

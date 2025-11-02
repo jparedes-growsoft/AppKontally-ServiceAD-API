@@ -1,5 +1,7 @@
 # AppKontally-ServiceAD-API
 
+![Portal.Kontally.com](/Resources/images/service.jpg)
+
 Servicio **Windows / API REST** que centraliza la integración con **Active Directory** y **Kontally ERP**.  
 Aplica políticas de **tenants, roles y pagos/suspensiones** y expone un **contrato HTTP seguro** consumido por la pasarela **ISAPI**.
 
